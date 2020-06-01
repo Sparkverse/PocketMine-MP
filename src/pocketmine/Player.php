@@ -146,6 +146,9 @@ use pocketmine\network\mcpe\protocol\types\CommandEnum;
 use pocketmine\network\mcpe\protocol\types\CommandParameter;
 use pocketmine\network\mcpe\protocol\types\ContainerIds;
 use pocketmine\network\mcpe\protocol\types\DimensionIds;
+use pocketmine\network\mcpe\protocol\types\GameMode;
+use pocketmine\network\mcpe\protocol\types\PersonaPieceTintColor;
+use pocketmine\network\mcpe\protocol\types\PersonaSkinPiece;
 use pocketmine\network\mcpe\protocol\types\PlayerPermissions;
 use pocketmine\network\mcpe\protocol\types\SkinAdapterSingleton;
 use pocketmine\network\mcpe\protocol\types\SkinAnimation;
@@ -214,6 +217,8 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	public const SPECTATOR = 3;
 	public const VIEW = Player::SPECTATOR;
 
+	private const RESOURCE_PACK_CHUNK_SIZE = 128 * 1024; //128KB
+
 	/**
 	 * Validates the given username.
 	 */
@@ -259,6 +264,8 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	/** @var bool */
 	public $loggedIn = false;
 
+	/** @var bool */
+	private $seenLoginPacket = false;
 	/** @var bool */
 	private $resourcePacksDone = false;
 
@@ -1329,12 +1336,13 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	 * TODO: remove this when Spectator Mode gets added properly to MCPE
 	 */
 	public static function getClientFriendlyGamemode(int $gamemode) : int{
-		$gamemode &= 0x03;
-		if($gamemode === Player::SPECTATOR){
-			return Player::CREATIVE;
-		}
-
-		return $gamemode;
+		static $map = [
+			self::SURVIVAL => GameMode::SURVIVAL,
+			self::CREATIVE => GameMode::CREATIVE,
+			self::ADVENTURE => GameMode::ADVENTURE,
+			self::SPECTATOR => GameMode::CREATIVE
+		];
+		return $map[$gamemode & 0x3];
 	}
 
 	/**
@@ -1814,9 +1822,10 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	}
 
 	public function handleLogin(LoginPacket $packet) : bool{
-		if($this->loggedIn){
+		if($this->seenLoginPacket){
 			return false;
 		}
+		$this->seenLoginPacket = true;
 
 		if($packet->protocol !== ProtocolInfo::CURRENT_PROTOCOL){
 			if($packet->protocol < ProtocolInfo::CURRENT_PROTOCOL){
@@ -1859,6 +1868,16 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			$animations[] = new SkinAnimation(new SkinImage($animation["ImageHeight"], $animation["ImageWidth"], base64_decode($animation["Image"], true)), $animation["Type"], $animation["Frames"]);
 		}
 
+		$personaPieces = [];
+		foreach($packet->clientData["PersonaPieces"] as $piece){
+			$personaPieces[] = new PersonaSkinPiece($piece["PieceId"], $piece["PieceType"], $piece["PackId"], $piece["IsDefault"], $piece["ProductId"]);
+		}
+
+		$pieceTintColors = [];
+		foreach($packet->clientData["PieceTintColors"] as $tintColor){
+			$pieceTintColors[] = new PersonaPieceTintColor($tintColor["PieceType"], $tintColor["Colors"]);
+		}
+
 		$skinData = new SkinData(
 			$packet->clientData["SkinId"],
 			base64_decode($packet->clientData["SkinResourcePatch"] ?? "", true),
@@ -1870,7 +1889,13 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			$packet->clientData["PremiumSkin"] ?? false,
 			$packet->clientData["PersonaSkin"] ?? false,
 			$packet->clientData["CapeOnClassicSkin"] ?? false,
-			$packet->clientData["CapeId"] ?? ""
+			$packet->clientData["CapeId"] ?? "",
+			null,
+			$packet->clientData["ArmSize"] ?? SkinData::ARM_SIZE_WIDE,
+			$packet->clientData["SkinColor"] ?? "",
+			$personaPieces,
+			$pieceTintColors,
+			true
 		);
 
 		$skin = SkinAdapterSingleton::get()->fromSkinData($skinData);
@@ -2047,7 +2072,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 					$pk = new ResourcePackDataInfoPacket();
 					$pk->packId = $pack->getPackId();
-					$pk->maxChunkSize = 1048576; //1MB
+					$pk->maxChunkSize = self::RESOURCE_PACK_CHUNK_SIZE;
 					$pk->chunkCount = (int) ceil($pack->getPackSize() / $pk->maxChunkSize);
 					$pk->compressedPackSize = $pack->getPackSize();
 					$pk->sha256 = $pack->getSha256();
@@ -2213,7 +2238,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	}
 
 	public function handleMovePlayer(MovePlayerPacket $packet) : bool{
-		$newPos = $packet->position->subtract(0, $this->baseOffset, 0);
+		$newPos = $packet->position->round(4)->subtract(0, $this->baseOffset, 0);
 
 		if($this->isTeleporting and $newPos->distanceSquared($this) > 1){  //Tolerate up to 1 block to avoid problems with client-sided physics when spawning in blocks
 			$this->sendPosition($this, null, null, MovePlayerPacket::MODE_RESET);
@@ -2280,11 +2305,6 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	public function handleInventoryTransaction(InventoryTransactionPacket $packet) : bool{
 		if(!$this->spawned or !$this->isAlive()){
 			return false;
-		}
-
-		if($this->isSpectator()){
-			$this->sendAllInventories();
-			return true;
 		}
 
 		/** @var InventoryAction[] $actions */
@@ -2380,7 +2400,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 						$this->setUsingItem(false);
 
-						if(!$this->canInteract($blockVector->add(0.5, 0.5, 0.5), 13) or $this->isSpectator()){
+						if(!$this->canInteract($blockVector->add(0.5, 0.5, 0.5), 13)){
 						}elseif($this->isCreative()){
 							$item = $this->inventory->getItemInHand();
 							if($this->level->useItemOn($blockVector, $item, $face, $packet->trData->clickPos, $this, true)){
@@ -2486,7 +2506,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 						}
 
 						$ev = new PlayerInteractEvent($this, $item, null, $directionVector, $face, PlayerInteractEvent::RIGHT_CLICK_AIR);
-						if($this->hasItemCooldown($item)){
+						if($this->hasItemCooldown($item) or $this->isSpectator()){
 							$ev->setCancelled();
 						}
 
@@ -2535,8 +2555,9 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 						$cancelled = false;
 
 						$heldItem = $this->inventory->getItemInHand();
+						$oldItem = clone $heldItem;
 
-						if(!$this->canInteract($target, 8)){
+						if(!$this->canInteract($target, 8) or $this->isSpectator()){
 							$cancelled = true;
 						}elseif($target instanceof Player){
 							if(!$this->server->getConfigBool("pvp")){
@@ -2594,7 +2615,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 						if($this->isAlive()){
 							//reactive damage like thorns might cause us to be killed by attacking another mob, which
 							//would mean we'd already have dropped the inventory by the time we reached here
-							if($heldItem->onAttackEntity($target) and $this->isSurvival() and $heldItem->equalsExact($this->inventory->getItemInHand())){ //always fire the hook, even if we are survival
+							if($heldItem->onAttackEntity($target) and $this->isSurvival() and $oldItem->equalsExact($this->inventory->getItemInHand())){ //always fire the hook, even if we are survival
 								$this->inventory->setItemInHand($heldItem);
 							}
 
@@ -3034,8 +3055,8 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		$pk = new ResourcePackChunkDataPacket();
 		$pk->packId = $pack->getPackId();
 		$pk->chunkIndex = $packet->chunkIndex;
-		$pk->data = $pack->getPackChunk(1048576 * $packet->chunkIndex, 1048576);
-		$pk->progress = (1048576 * $packet->chunkIndex);
+		$pk->data = $pack->getPackChunk(self::RESOURCE_PACK_CHUNK_SIZE * $packet->chunkIndex, self::RESOURCE_PACK_CHUNK_SIZE);
+		$pk->progress = (self::RESOURCE_PACK_CHUNK_SIZE * $packet->chunkIndex);
 		$this->dataPacket($pk);
 		return true;
 	}
@@ -3719,6 +3740,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		$pk->headYaw = $yaw;
 		$pk->yaw = $yaw;
 		$pk->mode = $mode;
+		$pk->onGround = $this->onGround;
 
 		if($targets !== null){
 			$this->server->broadcastPacket($targets, $pk);
