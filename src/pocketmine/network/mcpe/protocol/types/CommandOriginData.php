@@ -25,7 +25,8 @@ namespace pocketmine\network\mcpe\protocol\types;
 
 use pocketmine\utils\UUID;
 
-class CommandOriginData{
+class CommandOriginData {
+
 	public const ORIGIN_PLAYER = 0;
 	public const ORIGIN_BLOCK = 1;
 	public const ORIGIN_MINECART_BLOCK = 2;
