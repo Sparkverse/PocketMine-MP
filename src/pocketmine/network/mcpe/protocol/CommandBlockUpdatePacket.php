@@ -27,7 +27,8 @@ namespace pocketmine\network\mcpe\protocol;
 
 use pocketmine\network\mcpe\NetworkSession;
 
-class CommandBlockUpdatePacket extends DataPacket{
+class CommandBlockUpdatePacket extends DataPacket {
+
 	public const NETWORK_ID = ProtocolInfo::COMMAND_BLOCK_UPDATE_PACKET;
 
 	/** @var bool */
@@ -62,15 +63,15 @@ class CommandBlockUpdatePacket extends DataPacket{
 	/** @var bool */
 	public $executeOnFirstTick;
 
-	protected function decodePayload(){
+	protected function decodePayload() {
 		$this->isBlock = $this->getBool();
 
-		if($this->isBlock){
+		if ($this->isBlock) {
 			$this->getBlockPosition($this->x, $this->y, $this->z);
 			$this->commandBlockMode = $this->getUnsignedVarInt();
 			$this->isRedstoneMode = $this->getBool();
 			$this->isConditional = $this->getBool();
-		}else{
+		} else {
 			//Minecart with command block
 			$this->minecartEid = $this->getEntityRuntimeId();
 		}
@@ -84,15 +85,15 @@ class CommandBlockUpdatePacket extends DataPacket{
 		$this->executeOnFirstTick = $this->getBool();
 	}
 
-	protected function encodePayload(){
+	protected function encodePayload() {
 		$this->putBool($this->isBlock);
 
-		if($this->isBlock){
+		if ($this->isBlock) {
 			$this->putBlockPosition($this->x, $this->y, $this->z);
 			$this->putUnsignedVarInt($this->commandBlockMode);
 			$this->putBool($this->isRedstoneMode);
 			$this->putBool($this->isConditional);
-		}else{
+		} else {
 			$this->putEntityRuntimeId($this->minecartEid);
 		}
 
@@ -105,7 +106,8 @@ class CommandBlockUpdatePacket extends DataPacket{
 		$this->putBool($this->executeOnFirstTick);
 	}
 
-	public function handle(NetworkSession $session) : bool{
+	public function handle(NetworkSession $session) : bool {
 		return $session->handleCommandBlockUpdate($this);
 	}
+
 }
